@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Synchronize a private, secret-free Vast template from the checked-in config.
 source "$(dirname "$(realpath "$0")")/_common.sh"
-export ROOT IMAGE DISK_GB
+export ROOT IMAGE DISK_GB TEMPLATE_NAME
 export VAST_API_KEY="${VAST_API_KEY:-$(op read "$VAST_KEY_REF")}"
 python="$(dirname "$(realpath "$(command -v vastai)")")/python"
 [[ -x "$python" ]] || die "expected the Python interpreter beside the installed vastai CLI"
@@ -14,7 +14,7 @@ from vastai import VastAI
 
 root = Path(os.environ['ROOT'])
 client = VastAI(api_key=os.environ['VAST_API_KEY'], quiet=True)
-name = 'vast-coder-gguf-ssh'
+name = os.environ['TEMPLATE_NAME']
 image, tag = os.environ['IMAGE'].rsplit(':', 1)
 onstart = subprocess.check_output([str(root / 'bin/onstart')], text=True)
 fields = dict(name=name, image=image, image_tag=tag, env='', onstart_cmd=onstart,

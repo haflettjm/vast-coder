@@ -8,12 +8,14 @@ if [[ -n "$existing" ]]; then
   echo "instance $existing ($LABEL) already exists, nothing to do"
   exit 0
 fi
-# An unlabelled rental must not cause accidental overlapping billing.
+# An unlabelled rental must not cause accidental overlapping billing. --additional
+# permits extra, differently labelled rentals (for example a migration test).
 vast show instances --raw | python3 -c '
 import json, sys
-if json.load(sys.stdin):
+rows = json.load(sys.stdin)
+if rows and (sys.argv[1] != "--additional" or any(not r.get("label") for r in rows)):
     sys.exit("another rental exists; inspect it before creating an instance")
-'
+' "${1:-}"
 offer="$("$ROOT/bin/offers" --pick)"
 echo "renting offer $offer; hourly price is within MAX_HOURLY_COST"
 vast create instance "$offer" \

@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 # Print the reproducible, secret-free container startup script.
 source "$(dirname "$(realpath "$0")")/_common.sh"
+if [[ "$ENGINE" == vllm ]]; then
+cat <<EOF
+umask 077
+mkdir -p /workspace/models
+key="\${LLAMA_API_KEY:-\$(cat /root/llm_api_key)}"
+[[ -n "\$key" ]] || { echo 'LLAMA_API_KEY is required on first start' >&2; exit 1; }
+printf '%s\n' "\$key" > /root/llm_api_key
+cat > /root/vllm.sh <<'EOS'
+#!/bin/bash
+export HF_HOME=/workspace/models/hf
+export VLLM_API_KEY="\$(cat /root/llm_api_key)"
+f=/workspace/models/$HF_FILE
+[[ -s "\$f" ]] || python3 -c "from huggingface_hub import hf_hub_download as d; d('$HF_REPO', '$HF_FILE', local_dir='/workspace/models')"
+python3 -c 'import vllm_gguf_plugin' 2>/dev/null || pip install -q vllm-gguf-plugin
+exec vllm serve "\$f" --tokenizer '$VLLM_BASE_MODEL' --hf-config-path '$VLLM_BASE_MODEL' \\
+  --served-model-name '$MODEL_ALIAS' --tensor-parallel-size 2 --max-model-len $CTX_SIZE --max-num-seqs $PARALLEL \\
+  --kv-cache-dtype $VLLM_KV_DTYPE --gpu-memory-utilization $VLLM_GPU_UTIL \\
+  --speculative-config '{"method":"mtp","num_speculative_tokens":$VLLM_MTP_TOKENS}' \\
+  --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0}' \\
+  --host 127.0.0.1 --port $REMOTE_PORT
+EOS
+chmod 700 /root/vllm.sh
+nohup /root/vllm.sh > /workspace/vllm.log 2>&1 &
+EOF
+exit 0
+fi
 cat <<EOF
 umask 077
 mkdir -p /workspace/models

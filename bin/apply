@@ -2,10 +2,13 @@
 """Apply server settings on the existing rental, retaining a rollback script."""
 from pathlib import Path
 import shlex
+import os
 import subprocess
 import sys
 
 root = Path(__file__).resolve().parent.parent
+if os.environ.get('ENGINE', 'llamacpp') != 'llamacpp':
+    raise SystemExit('bin/apply only manages the llama.cpp server')
 rollback = sys.argv[1:] == ['--rollback']
 if sys.argv[1:] and not rollback:
     raise SystemExit('usage: bin/apply [--rollback]')

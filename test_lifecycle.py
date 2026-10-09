@@ -59,4 +59,28 @@ else:
     assert (root / '.state/llm_api_key').read_text().strip() not in startup
     assert (root / '.state/llm_api_key').stat().st_mode & 0o777 == 0o600
     assert subprocess.run(['bash', '-n'], input=startup, text=True).returncode == 0
+    # vLLM engine: separate image, file and server, same secret isolation.
+    (root / 'create').unlink()
+    result = run('up', ENGINE='vllm')
+    assert result.returncode == 0, result.stderr
+    args = json.loads((root / 'create').read_text())
+    assert args[args.index('--image') + 1] == 'vllm/vllm-openai:v0.31.0'
+    startup = args[args.index('--onstart-cmd') + 1]
+    assert 'MAX-MTP-Q5_K_S.gguf' in startup and 'vllm serve' in startup and 'llama-server' not in startup
+    assert '"method":"mtp"' in startup and '--tensor-parallel-size 2' in startup and '--host 127.0.0.1' in startup
+    assert '--api-key' not in startup and (root / '.state/llm_api_key').read_text().strip() not in startup
+    assert subprocess.run(['bash', '-n'], input=startup, text=True).returncode == 0
+    guard = subprocess.run(['python3', str(root / 'bin/apply')], env=dict(env, ENGINE='vllm'), text=True,
+                           capture_output=True, timeout=10)
+    assert guard.returncode != 0 and 'llama.cpp' in guard.stderr  # apply only manages llama.cpp
+    # An additional, differently labelled rental needs an explicit flag; unlabelled ones never pass.
+    other = '[{"id": 8, "label": "vast-coder"}]'
+    (root / 'create').unlink()
+    assert run('up', LABEL='vast-coder-new', TEST_INSTANCES=other).returncode != 0
+    assert not (root / 'create').exists()
+    assert run('up', '--additional', LABEL='vast-coder-new', TEST_INSTANCES=other).returncode == 0
+    assert '--label' in json.loads((root / 'create').read_text())
+    (root / 'create').unlink()
+    assert run('up', '--additional', LABEL='vast-coder-new', TEST_INSTANCES='[{"id": 8, "label": null}]').returncode != 0
+    assert not (root / 'create').exists()
 print('Offline checks passed: single rental, price cap, region filter, SSH-only startup, secret isolation')
