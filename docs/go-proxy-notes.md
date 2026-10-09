@@ -2,6 +2,8 @@
 
 Working notes from the 2026-10-09 debugging session. Nothing here is committed policy. Keep credentials and exact endpoints out of this file.
 
+Historical context: the measurements below describe the first rental (Hebei, CN, two slots). That rental is gone. The current rental is in the United States with four slots, and the engine decision is in `docs/operations.md`. The congestion mechanics (one shared TCP stream, queued large prompts, dead clients) are why the proxy exists and still apply to any lossy path.
+
 ## Why the SSH bridge jams (verified)
 
 - The rental is in Hebei, CN. ICMP from the workstation showed 15% loss at about 230 ms RTT. The local Wi-Fi hop was clean (0% loss, 4 ms to the gateway).

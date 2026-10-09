@@ -28,7 +28,7 @@ This is the durable record of the deployment, measurements, failures, and outsta
 - MTP: `draft-mtp`, maximum two draft tokens.
 - Four request slots with unified KV and continuous batching. Every slot can use the full 262,144-token pool; slots share it, they do not divide it.
 - q8_0 K/V cache (`KV_CACHE_TYPE`); Flash Attention enabled; automatic context reduction disabled.
-- Same Q6_K model file as the original baseline.
+- Q5_K_S model file (the Q6_K file was the original baseline; the older speed tables below used it).
 - Model server binds to remote loopback. Agent clients use the local loopback bridge.
 
 Startup logs verified the MTP draft context and the 262,144-token allocation. `/props` reported the default speculative field as `none`, but actual response draft counters and log acceptance statistics proved that MTP was active. Do not use that default field alone as a readiness assertion.
