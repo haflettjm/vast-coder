@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Probe HTTP readiness without inference requests or request replay."""
+import argparse
+import fcntl
+import http.client
+import json
+import math
+import os
+from pathlib import Path
+import shlex
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent.parent
+# SSH needs a few seconds to reconnect over this lossy path after a tunnel restart.
+RESTART_WAIT = 30
+
+
+def load_settings():
+    # Source shared config, but emit only non-secret health settings.
+    result = subprocess.run(
+        ['bash', '-c', 'source "$1"; printf "%s\\n" "${LOCAL_PORT:-8000}" '
+         '"${REMOTE_PORT:-8080}" "${HEALTH_TIMEOUT:-5}" "${HEALTH_COOLDOWN:-120}" "${HEALTH_FAILURES:-3}"',
+         'health', str(ROOT / 'bin/_common.sh')],
+        text=True, capture_output=True, timeout=15, check=True)
+    values = result.stdout.splitlines()
+    if len(values) != 5:
+        raise ValueError('invalid settings')
+    settings = dict(zip(('LOCAL_PORT', 'REMOTE_PORT', 'HEALTH_TIMEOUT', 'HEALTH_COOLDOWN', 'HEALTH_FAILURES'),
+                        map(int, values)))
+    if not (1 <= settings['LOCAL_PORT'] <= 65535 and 1 <= settings['REMOTE_PORT'] <= 65535
+            and settings['HEALTH_TIMEOUT'] > 0 and settings['HEALTH_COOLDOWN'] >= 0
+            and settings['HEALTH_FAILURES'] >= 1):
+        raise ValueError('invalid settings')
+    settings['STATE_DIR'] = str(ROOT / '.state')
+    return settings
+
+
+def probe(url, timeout):
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=timeout) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code
+    except (OSError, urllib.error.URLError, http.client.HTTPException):
+        return None
+
+
+def listening(port, timeout):
+    """True when the local forward accepts TCP, even if HTTP is stuck behind a congested tunnel."""
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def remote_probe(settings):
+    code = f'''import urllib.request, urllib.error, http.client
+try:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({{}})).open(
+            "http://127.0.0.1:{settings['REMOTE_PORT']}/health", timeout={settings['HEALTH_TIMEOUT']}) as response:
+        print(response.status)
+except urllib.error.HTTPError as error:
+    error.close()
+    print(error.code)
+except (OSError, urllib.error.URLError, http.client.HTTPException):
+    print(0)
+'''
+    try:
+        result = subprocess.run(
+            [str(ROOT / 'bin/ssh'), '--cached', '-o', 'BatchMode=yes', '-o',
+             f"ConnectTimeout={settings['HEALTH_TIMEOUT']}", shlex.join(['python3', '-c', code])],
+            text=True, capture_output=True, timeout=settings['HEALTH_TIMEOUT'] + 5)
+        status = int(result.stdout.strip()) if result.returncode == 0 else 0
+        return status if 100 <= status <= 599 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def note_failure(settings, failed):
+    """Count consecutive degraded checks. A congested tunnel can be slow but alive."""
+    path = Path(settings['STATE_DIR']) / 'health-failures'
+    try:
+        count = int(path.read_text()) if failed else 0
+    except (OSError, ValueError):
+        count = 0
+    count = count + 1 if failed else 0
+    try:
+        path.write_text(str(count))
+    except OSError:
+        pass
+    return count
+
+
+def restart_bridge(settings):
+    try:
+        path = Path(settings['STATE_DIR']) / 'health-repair'
+        with os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), 'r+') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return 'repair-busy'
+            previous = lock.read().strip()
+            now = time.time()
+            if previous:
+                last = float(previous)
+                if not math.isfinite(last) or last < 0:
+                    return 'repair-error'
+                if now - last < settings['HEALTH_COOLDOWN']:
+                    return 'cooldown'
+            # Persist attempts, including failed restarts, to prevent restart storms.
+            lock.seek(0)
+            lock.truncate()
+            lock.write(str(now))
+            lock.flush()
+            os.fsync(lock.fileno())
+            result = subprocess.run(
+                ['systemctl', '--user', 'restart', 'vast-coder-bridge.service'],
+                capture_output=True, timeout=15)
+            return 'restarted' if result.returncode == 0 else 'restart-failed'
+    except subprocess.TimeoutExpired:
+        return 'restart-failed'
+    except (OSError, ValueError):
+        return 'repair-error'
+
+
+def check(settings, repair=False):
+    url = f"http://127.0.0.1:{settings['LOCAL_PORT']}/health"
+    local = probe(url, settings['HEALTH_TIMEOUT'])
+    remote = remote_probe(settings) if local not in (200, 503) else None
+    action = 'not-needed' if repair else 'not-requested'
+    degraded = remote == 200 and local not in (200, 503)
+    failures = note_failure(settings, degraded) if repair else 0
+    if repair and degraded:
+        if failures < settings['HEALTH_FAILURES']:
+            action = 'waiting'
+        else:
+            action = restart_bridge(settings)
+        if action == 'restarted':
+            deadline = time.monotonic() + RESTART_WAIT
+            while True:
+                local = probe(url, settings['HEALTH_TIMEOUT'])
+                if local is not None or time.monotonic() >= deadline:
+                    break
+                time.sleep(2)
+    ready = local == 200
+    loading = local == 503 or (not ready and remote == 503)
+    return {'status': 'inference-ready' if ready else 'model-loading' if loading else 'unreachable',
+            'tunnel-connected': local is not None or listening(settings['LOCAL_PORT'], 1), 'model-loading': loading,
+            'inference-ready': ready, 'unreachable': not ready and not loading,
+            'tunnel-degraded': degraded, 'consecutive-failures': failures,
+            'local-http': local, 'remote-http': remote, 'repair': action}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repair', action='store_true', help='restart only a degraded tunnel, with cooldown')
+    args = parser.parse_args(argv)
+    try:
+        settings = load_settings()
+        result = check(settings, args.repair)
+        result.update({'health-timeout': settings['HEALTH_TIMEOUT'],
+                       'repair-cooldown': settings['HEALTH_COOLDOWN']})
+    except (OSError, ValueError, subprocess.SubprocessError):
+        result = {'status': 'unreachable', 'tunnel-connected': False, 'model-loading': False,
+                  'inference-ready': False, 'unreachable': True, 'reason': 'configuration-error'}
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result['inference-ready'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

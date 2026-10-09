@@ -11,9 +11,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lifecycle safety checks (no cloud credentials)
         run: python3 test_lifecycle.py
+      - name: Endpoint cache and discovery checks
+        run: python3 test_endpoint.py
+      - name: Watchdog checks
+        run: python3 -m unittest -v test_health
       - name: Shell syntax
         shell: bash
         run: |
           for script in bin/*; do
-            if [[ "$script" != bin/check ]]; then bash -n "$script"; fi
+            IFS= read -r first < "$script"
+            if [[ "$first" == *bash* ]]; then
+              bash -n "$script"
+            elif [[ "$first" == *python* ]]; then
+              python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$script"
+            fi
           done

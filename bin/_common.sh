@@ -12,9 +12,9 @@ chmod 700 "$STATE_DIR"
 # Resolve credentials only for commands that actually contact Vast.
 vast() {
   if [[ -z "${VAST_API_KEY:-}" ]]; then
-    VAST_API_KEY="$(op read "$VAST_KEY_REF")"
+    VAST_API_KEY="$(timeout "${DISCOVERY_TIMEOUT:-15}" op read "$VAST_KEY_REF")" || return
   fi
-  command vastai --api-key "$VAST_API_KEY" "$@"
+  timeout "${DISCOVERY_TIMEOUT:-15}" vastai --api-key "$VAST_API_KEY" "$@"
 }
 
 die() { echo "error: $*" >&2; exit 1; }

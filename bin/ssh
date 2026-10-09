@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# SSH into the instance. Extra args run as a remote command.
+# SSH through the discovered endpoint; --cached skips cloud/credential discovery.
 source "$(dirname "$(realpath "$0")")/_common.sh"
-
-id="$(instance_id)"
-[[ -n "$id" ]] || die "no instance labelled $LABEL"
-
-url="$(vast ssh-url "$id")"   # ssh://root@host:port
-hostport="${url#ssh://}"
-exec ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${hostport##*:}" "${hostport%:*}" "$@"
+mode=()
+if [[ "${1:-}" == --cached ]]; then
+  mode=(--cached)
+  shift
+fi
+endpoint="$("$ROOT/bin/endpoint" "${mode[@]}")"
+mapfile -t target < <(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["host"]); print(d["port"])' "$endpoint")
+exec ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+  -p "${target[1]}" "root@${target[0]}" "$@"

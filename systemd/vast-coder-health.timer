@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Vast coding model HTTP readiness every 30 seconds
+
+[Timer]
+OnStartupSec=30
+OnUnitInactiveSec=30
+AccuracySec=5
+Unit=vast-coder-health.service
+
+[Install]
+WantedBy=timers.target

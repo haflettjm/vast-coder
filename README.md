@@ -29,7 +29,7 @@ Only SSH is exposed by the rental. The inference server and laptop bridge bind t
 - API model alias: `qwen3.8-coder`
 - Engine: `ghcr.io/ggml-org/llama.cpp:server-cuda`
 
-The model file is explicitly selected. Scripts do not substitute a smaller model or another quant. MTP heads being present does not mean speculative decoding is enabled. Benchmark it separately before enabling it.
+The model file is explicitly selected. Scripts do not substitute a smaller model or another quant. The current desired state enables MTP with two draft tokens, tensor splitting across both GPUs, two concurrent slots, and a shared 262,144-token context pool.
 
 ## Requirements
 
@@ -54,6 +54,18 @@ bin/ssh nvidia-smi
 ```
 
 `bin/up` is create-if-absent, not a full reconciliation engine. Editing desired state does not silently recreate or mutate an existing rental. It refuses duplicate labels, competing local creation attempts, another unlabelled rental, and offers above `MAX_HOURLY_COST`.
+
+Apply server-only settings without replacing the rental or downloading weights again:
+
+```bash
+python3 bin/apply              # Brief server outage; keeps a one-level rollback script
+bin/status --log
+python3 bin/check
+python3 bin/bench candidate    # Single-request and two-request speed, saved under .state/
+python3 bin/apply --rollback   # Restore the previous remote server/boot scripts
+```
+
+Stop active jobs before applying. Rollback changes the remote scripts, not `vast-coder.env`; restore desired state separately if rejecting a candidate. The apply command preserves downloaded weights and updates the remote boot script.
 
 The template is named `vast-coder-gguf-ssh`. It is private and contains no API key. Renting it manually requires supplying `LLAMA_API_KEY` in the instance environment; `bin/up` handles this automatically. Template updates are read back and verified. They do not alter existing instances.
 
@@ -132,13 +144,24 @@ Stopping a rental is different from destroying it. `bin/down` destroys it. Stopp
 
 ## Dual-GPU and batch tuning
 
-Start with llama.cpp's default layer split, full GPU offload, Flash Attention, and FP16 KV. Check `nvidia-smi topo -m`; two 3090s do not imply NVLink is installed. The initially provisioned host reports PCIe/PHB connectivity.
+The original compatibility baseline used layer splitting, full GPU offload, Flash Attention, FP16 KV, and 64K context. The tested candidate uses tensor splitting across both GPUs, FP16 KV, MTP with two draft tokens, two slots, continuous batching, and a shared 256K context pool. `--fit off` prevents silently reducing the configured context. Check `nvidia-smi topo -m`; the tested host reports PCIe/PHB connectivity, not NVLink. Its CUDA backend links NCCL.
 
-Continuous batching is enabled by default in the tested build. Concurrent client requests, server slots, and token batch size are different knobs. Bound client concurrency and benchmark two versus four concurrent requests using real coding prompts. Context memory is a shared budget, not an automatic 64K allocation for every job.
+Measured on the same short coding prompt and exact Q6_K model:
+
+| Metric | Original baseline | Tensor + MTP, 256K configured |
+| --- | ---: | ---: |
+| Single-request server decode | 32.17 tok/s | 71.69 tok/s |
+| Single-request end-to-end output | 26.51 tok/s | 49.18 tok/s |
+| Two-request aggregate end-to-end output | 48.67 tok/s | 70.09 tok/s |
+| Single-request MTP draft acceptance | Not enabled | 81.7% |
+
+These are small-sample measurements, not a sustained production benchmark. Server decode excludes prefill and network overhead; end-to-end rates include them. A short request with a 256K allocation does not prove long-context performance. UI peaks or streamed chunks are not sustained throughput. `/props` may report the default speculative setting as `none` even while MTP is active; verify actual draft/acceptance counters and startup logs.
+
+Concurrent client requests, server slots, and token batch size are different knobs. Two GPUs performing tensor-parallel compute do not mean one independent model replica per GPU. Context memory is shared; this setup does not guarantee two simultaneous 256K conversations.
 
 For interactive agents, measure time to first token and tool-step latency. For independent bulk jobs, measure aggregate output tokens/sec and total completion time. Save results incrementally with job IDs and bounded transient retries. Schedule bulk work separately if it interferes with interactive latency.
 
-Do not enable experimental tensor splitting, CUDA peer-to-peer, aggressive KV quantization, or MTP merely because they exist. Verify output correctness and end-to-end speed first. Pin a verified container digest for reproducible performance; the default `server-cuda` tag moves.
+Further changes require correctness and end-to-end speed checks. In particular, tensor splitting plus MTP has open lockup reports; a smoke test is not proof of long-term stability. Do not enable CUDA peer-to-peer or aggressive KV quantization blindly. Pin a verified container digest for reproducible performance; the default `server-cuda` tag moves.
 
 References: [multi-GPU guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/multi-gpu.md), [server settings](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), [tool calling](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md), [SPEED-Bench](https://github.com/ggml-org/llama.cpp/tree/master/tools/server/bench/speed-bench), [reported MTP multi-GPU prefill regression](https://github.com/ggml-org/llama.cpp/issues/27428).
 
@@ -155,4 +178,8 @@ Offline checks use an explicitly fake Vast CLI. They do not rent GPUs. They cove
 
 ## Verification status
 
-The lifecycle checks, private template synchronization/readback, SSH-only rental startup, dual-GPU visibility, and local systemd tunnel have been exercised. Live model inference and tool-calling verification are still pending the initial download. No throughput claims are made without a completed benchmark.
+The lifecycle checks, template synchronization/readback, SSH-only startup, dual-GPU visibility, model identity, and tool-call round trip have been exercised. Tensor splitting plus MTP measured 71.69 tok/s on a short coding request. The near-full-context test was canceled and competing requests exceeded the shared pool. The localhost bridge is currently degraded and is not yet repaired. See [operations and verification notes](docs/operations.md) for exact findings and remaining checks.
+
+## Readiness and watchdog
+
+`bin/health` prints JSON with `status` (`inference-ready`, `model-loading`, `unreachable`), `tunnel-connected`, and `tunnel-degraded` (remote healthy, local not). `--repair` restarts only the local bridge after `HEALTH_FAILURES` consecutive degraded checks, with a `HEALTH_COOLDOWN` between restarts. It never touches the rental and never replays requests. See `docs/operations.md` for the verified congestion root cause and limitations.

@@ -4,14 +4,16 @@ source "$(dirname "$(realpath "$0")")/_common.sh"
 cat <<EOF
 umask 077
 mkdir -p /workspace/models
-printf '%s\n' "\${LLAMA_API_KEY:?Set LLAMA_API_KEY when renting this template}" > /root/llm_api_key
+key="\${LLAMA_API_KEY:-\$(cat /root/llm_api_key)}"
+[[ -n "\$key" ]] || { echo 'LLAMA_API_KEY is required on first start' >&2; exit 1; }
+printf '%s\n' "\$key" > /root/llm_api_key
 cat > /root/llama.sh <<'EOS'
 #!/bin/bash
 export LLAMA_CACHE=/workspace/models
 export LD_LIBRARY_PATH=/app:\${LD_LIBRARY_PATH:-}
 exec /app/llama-server \\
   --hf-repo '$HF_REPO' --hf-file '$HF_FILE' --alias '$MODEL_ALIAS' \\
-  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja \\
+  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja --fit off --split-mode $SPLIT_MODE --tensor-split 1,1 --device CUDA0,CUDA1 --cache-type-k f16 --cache-type-v f16 --parallel $PARALLEL --kv-unified --cont-batching --spec-type $SPEC_TYPE --spec-draft-n-max $DRAFT_MAX \\
   $SAMPLING \\
   --host 127.0.0.1 --port $REMOTE_PORT --api-key-file /root/llm_api_key
 EOS

@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Resolve the current labelled SSH endpoint, with bounded private cache fallback."""
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import urlsplit
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def settings():
+    script = 'source ' + shlex.quote(str(ROOT / 'bin/_common.sh')) + '; printf "%s\\n" "$LABEL" "$DISCOVERY_TIMEOUT" "$CACHE_MAX_AGE"'
+    label, timeout, age = subprocess.check_output(['bash', '-c', script], text=True, timeout=5).splitlines()
+    return label, int(timeout), int(age)
+
+
+def valid(row, label, max_age):
+    assert row['label'] == label and isinstance(row['id'], int) and row['id'] > 0
+    assert re.fullmatch(r'[A-Za-z0-9.:-]+', row['host']) and not row['host'].startswith('-')
+    assert isinstance(row['port'], int) and 1 <= row['port'] <= 65535
+    assert 0 <= time.time() - row['updated_at'] <= max_age
+    return row
+
+
+def cached(path, label, age):
+    try:
+        return valid(json.loads(path.read_text()), label, age)
+    except (OSError, ValueError, AssertionError, KeyError, TypeError):
+        raise SystemExit('no valid cached SSH endpoint; unlock 1Password and rediscover')
+
+
+def vast(args, timeout):
+    script = 'source ' + shlex.quote(str(ROOT / 'bin/_common.sh')) + '; vast "$@"'
+    return subprocess.check_output(['bash', '-c', script, 'endpoint', *args], text=True,
+                                   stderr=subprocess.DEVNULL, timeout=2 * timeout + 3)
+
+
+def main():
+    label, timeout, age = settings()
+    path = ROOT / '.state/ssh_endpoint.json'
+    if sys.argv[1:] == ['--cached']:
+        print(json.dumps(cached(path, label, age)))
+        return
+    if sys.argv[1:]:
+        raise SystemExit('usage: bin/endpoint [--cached]')
+    try:
+        rows = json.loads(vast(['show', 'instances', '--raw'], timeout))
+        assert isinstance(rows, list)
+    except (subprocess.SubprocessError, ValueError, AssertionError):
+        print('discovery unavailable; using last verified endpoint', file=sys.stderr)
+        print(json.dumps(cached(path, label, age)))
+        return
+    matches = [r for r in rows if r.get('label') == label]
+    # Successful discovery is authoritative. Never use cache for absent/duplicate labels.
+    if len(matches) != 1:
+        path.unlink(missing_ok=True)
+        raise SystemExit('expected exactly one instance labelled ' + label)
+    instance = matches[0]
+    try:
+        url = urlsplit(vast(['ssh-url', str(instance['id'])], timeout).strip())
+        assert url.scheme == 'ssh' and url.username == 'root' and url.password is None
+        row = valid({'id': instance['id'], 'label': label, 'host': url.hostname,
+                     'port': url.port, 'updated_at': time.time()}, label, age)
+    except (subprocess.SubprocessError, ValueError, AssertionError, TypeError):
+        row = cached(path, label, age)
+        if row['id'] != instance['id']:
+            raise SystemExit('new instance has no verified SSH endpoint yet')
+        print('SSH lookup unavailable; using cached endpoint for the same instance', file=sys.stderr)
+        print(json.dumps(row))
+        return
+    os.umask(0o077)
+    # A unique temp name keeps concurrent writers (tunnel, watchdog, user) from clobbering each other.
+    with tempfile.NamedTemporaryFile('w', dir=path.parent, prefix='.ssh_endpoint.', delete=False) as tmp:
+        tmp.write(json.dumps(row) + '\n')
+    Path(tmp.name).replace(path)
+    print(json.dumps(row))
+
+
+if __name__ == '__main__':
+    main()

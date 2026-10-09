@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Measure single-request decode and two-request aggregate throughput."""
+from concurrent.futures import ThreadPoolExecutor
+import json
+from pathlib import Path
+import sys
+import time
+import urllib.request
+
+root = Path(__file__).resolve().parent.parent
+key = (root / '.state/llm_api_key').read_text().strip()
+base = 'http://127.0.0.1:8000'
+label = sys.argv[1] if len(sys.argv) > 1 else 'current'
+assert label.replace('-', '').replace('_', '').isalnum(), 'invalid benchmark label'
+
+
+def request(path, payload=None):
+    req = urllib.request.Request(base + path, data=None if payload is None else json.dumps(payload).encode(),
+                                 headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=180) as response:
+        return json.load(response)
+
+
+def generate(index):
+    payload = {'model': 'qwen3.8-coder', 'messages': [{'role': 'user', 'content':
+        'Write a Python LRU cache implementation with a brief explanation and usage example.'}],
+        'max_tokens': 512, 'temperature': 0.6, 'seed': 42 + index,
+        'reasoning_effort': 'low', 'cache_prompt': False}
+    start = time.monotonic()
+    data = request('/v1/chat/completions', payload)
+    return {'seconds': round(time.monotonic() - start, 3), 'usage': data['usage'],
+            'timings': data.get('timings'), 'finish_reason': data['choices'][0]['finish_reason']}
+
+
+props = request('/props')
+report = {'label': label, 'context': props['default_generation_settings']['n_ctx'],
+          'slots': props['total_slots'],
+          'speculative_default_reported': props['default_generation_settings']['params'].get('speculative.types')}
+for concurrency in (1, 2):
+    start = time.monotonic()
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        rows = list(pool.map(generate, range(concurrency)))
+    duration = time.monotonic() - start
+    tokens = sum(row['usage']['completion_tokens'] for row in rows)
+    drafts = sum((row['timings'] or {}).get('draft_n', 0) for row in rows)
+    accepted = sum((row['timings'] or {}).get('draft_n_accepted', 0) for row in rows)
+    report[str(concurrency)] = {'wall_seconds': round(duration, 3), 'output_tokens': tokens,
+                               'aggregate_output_tok_s': round(tokens / duration, 2),
+                               'draft_acceptance': round(accepted / drafts, 4) if drafts else None,
+                               'drafting_observed': drafts > 0, 'requests': rows}
+(root / '.state' / ('bench-' + label + '.json')).write_text(json.dumps(report, indent=2) + '\n')
+print(json.dumps(report, indent=2))

@@ -1,0 +1,10 @@
+[Unit]
+Description=Vast coding model HTTP readiness and tunnel watchdog
+
+[Service]
+Type=oneshot
+Environment=VAST_CODER_ROOT=%h/git/personal/vast-coder
+ExecStart=/usr/bin/bash -lc 'exec "$VAST_CODER_ROOT/bin/health" --repair'
+SuccessExitStatus=1
+TimeoutStartSec=90
+UMask=0077

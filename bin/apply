@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Apply server settings on the existing rental, retaining a rollback script."""
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+root = Path(__file__).resolve().parent.parent
+rollback = sys.argv[1:] == ['--rollback']
+if sys.argv[1:] and not rollback:
+    raise SystemExit('usage: bin/apply [--rollback]')
+if rollback:
+    script = '''set -euo pipefail
+umask 077
+test -s /root/llama.rollback.sh
+pkill -x llama-server || true
+sleep 2
+cp /root/llama.rollback.sh /root/llama.sh
+if [[ -f /root/onstart.rollback.sh ]]; then cp /root/onstart.rollback.sh /root/onstart.sh; fi
+nohup /root/llama.sh > /workspace/llama.log 2>&1 < /dev/null &
+'''
+else:
+    startup = subprocess.check_output([str(root / 'bin/onstart')], text=True)
+    key = (root / '.state/llm_api_key').read_text().strip()
+    boot_writer = "from pathlib import Path; p=Path('/root/onstart.sh'); p.write_text(" + repr(startup) + "); p.chmod(0o700)"
+    script = '''set -euo pipefail
+umask 077
+cp /root/llama.sh /root/llama.rollback.sh
+if [[ -f /root/onstart.sh ]]; then cp /root/onstart.sh /root/onstart.rollback.sh; fi
+pkill -x llama-server || true
+sleep 2
+export LLAMA_API_KEY=''' + shlex.quote(key) + '\npython3 -c ' + shlex.quote(boot_writer) + '\n' + startup
+# Sensitive material is sent through encrypted SSH stdin, never printed.
+subprocess.run([str(root / 'bin/ssh'), 'bash -s'], input=script, text=True, check=True, timeout=45)
+print('Server restart initiated; inspect bin/status --log before sending requests')
