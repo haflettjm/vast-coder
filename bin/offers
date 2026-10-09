@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Preview offers; --pick prints only the cheapest affordable offer id.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+query="$OFFER_QUERY"
+countries="${COUNTRIES_OVERRIDE-${COUNTRIES:-}}"
+if [[ -n "$countries" ]]; then
+  [[ "$countries" =~ ^[A-Z]{2}(,[A-Z]{2})*$ ]] || die "countries must be comma-separated two-letter uppercase codes"
+  query+=" geolocation in [$countries]"
+fi
+vast search offers "$query" --storage "$DISK_GB" -o dph_total --raw | python3 -c '
+import json, sys
+from heapq import nsmallest
+rows = json.load(sys.stdin)
+if not rows:
+    sys.exit("no offers match the configured region and hardware")
+limit = float(sys.argv[1])
+if sys.argv[2] == "--pick":
+    # O(n) time, O(1) extra space; API ordering is not trusted.
+    best = min(rows, key=lambda r: r["dph_total"])
+    if best["dph_total"] > limit:
+        sys.exit("cheapest offer exceeds MAX_HOURLY_COST")
+    print(best["id"])
+else:
+    # O(n log 5) time, O(5) extra space for the preview.
+    for r in nsmallest(5, rows, key=lambda r: r["dph_total"]):
+        print("offer %s: %s, $%.3f/hr, ingress $%.5f/GB%s" % (
+            r["id"], r.get("geolocation"), r["dph_total"], r.get("inet_down_cost", 0),
+            " (over cap)" if r["dph_total"] > limit else ""))
+' "$MAX_HOURLY_COST" "${1:-}"

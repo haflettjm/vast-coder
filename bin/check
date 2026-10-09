@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Check the tunnel, inference, and a complete tool-call round trip."""
+import json
+from pathlib import Path
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent.parent
+KEY = (ROOT / '.state/llm_api_key').read_text().strip()
+BASE = 'http://127.0.0.1:8000'
+
+
+def request(path, data=None):
+    body = None if data is None else json.dumps(data).encode()
+    req = urllib.request.Request(BASE + path, data=body, headers={
+        'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json',
+    })
+    with urllib.request.urlopen(req, timeout=300) as response:
+        return json.load(response)
+
+
+models = request('/v1/models')
+model = models['data'][0]['id']
+assert model == 'qwen3.8-coder', models
+print('Model verified:', model)
+messages = [
+    {'role': 'system', 'content': 'Use the supplied tool for arithmetic. After its result, answer concisely.'},
+    {'role': 'user', 'content': 'Use add_numbers to calculate 17 plus 25.'},
+]
+tools = [{'type': 'function', 'function': {
+    'name': 'add_numbers', 'description': 'Add two integers.',
+    'parameters': {'type': 'object', 'properties': {
+        'a': {'type': 'integer'}, 'b': {'type': 'integer'},
+    }, 'required': ['a', 'b'], 'additionalProperties': False},
+}}]
+payload = {'model': model, 'messages': messages, 'tools': tools,
+           'temperature': 0.6, 'max_tokens': 4096, 'reasoning_effort': 'low'}
+first = request('/v1/chat/completions', payload)
+message = first['choices'][0]['message']
+calls = message.get('tool_calls', [])
+assert len(calls) == 1, first
+call = calls[0]
+assert call['function']['name'] == 'add_numbers', call
+args = json.loads(call['function']['arguments'])
+assert args == {'a': 17, 'b': 25}, args
+result = args['a'] + args['b']
+messages.append(message)
+messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': str(result)})
+second = request('/v1/chat/completions', payload)
+answer = second['choices'][0]['message'].get('content', '')
+assert str(result) in answer, second
+assert second['choices'][0]['finish_reason'] == 'stop', second
+print('Tool call and result round trip verified:', answer.strip())
+print('Timings:', json.dumps({'first': first.get('timings'), 'second': second.get('timings')}))

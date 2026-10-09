@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Destroy the instance. This stops all billing and deletes the downloaded model.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+
+id="$(instance_id)"
+[[ -n "$id" ]] || { echo "no instance labelled $LABEL"; exit 0; }
+
+if [[ "${1:-}" != "-y" ]]; then
+  read -r -p "destroy instance $id ($LABEL)? [y/N] " ans
+  [[ "$ans" == "y" ]] || { echo "aborted"; exit 1; }
+fi
+vast destroy instance "$id" -y

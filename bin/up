@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Create one rental. Existing instances are never mutated or replaced here.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+exec 9>"$STATE_DIR/up.lock"
+flock -n 9 || die "bin/up is already running"
+existing="$(instance_id)"
+if [[ -n "$existing" ]]; then
+  echo "instance $existing ($LABEL) already exists, nothing to do"
+  exit 0
+fi
+# An unlabelled rental must not cause accidental overlapping billing.
+vast show instances --raw | python3 -c '
+import json, sys
+if json.load(sys.stdin):
+    sys.exit("another rental exists; inspect it before creating an instance")
+'
+offer="$("$ROOT/bin/offers" --pick)"
+echo "renting offer $offer; hourly price is within MAX_HOURLY_COST"
+vast create instance "$offer" \
+  --image "$IMAGE" --disk "$DISK_GB" --label "$LABEL" \
+  --ssh --direct --env "-e LLAMA_API_KEY=$(llm_api_key)" \
+  --onstart-cmd "$("$ROOT/bin/onstart")" --raw | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+print(json.dumps({k: r.get(k) for k in ("success", "new_contract")}))
+if not r.get("success"):
+    sys.exit("instance creation failed")
+'
+echo "created. watch progress with: bin/status"

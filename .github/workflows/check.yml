@@ -1,0 +1,19 @@
+name: Offline checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lifecycle safety checks (no cloud credentials)
+        run: python3 test_lifecycle.py
+      - name: Shell syntax
+        shell: bash
+        run: |
+          for script in bin/*; do
+            if [[ "$script" != bin/check ]]; then bash -n "$script"; fi
+          done

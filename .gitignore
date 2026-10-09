@@ -1,0 +1,18 @@
+.state/
+.beads/
+.dolt/
+*.db
+__pycache__/
+*.pyc
+.env
+
+# Local AI instructions and assistant workspace metadata
+[Aa][Gg][Ee][Nn][Tt][Ss].md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+.hermes.md
+.hermes/
+.claude/
+.codex/
+.cursor/

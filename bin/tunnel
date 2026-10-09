@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Forward localhost:$LOCAL_PORT to the model server. The server only listens on
+# the instance's loopback, so this tunnel is the only way in.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+
+echo "model API at http://localhost:$LOCAL_PORT/v1 (Ctrl-C to close)"
+exec "$(dirname "$(realpath "$0")")/ssh" -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -L "127.0.0.1:$LOCAL_PORT:127.0.0.1:$REMOTE_PORT"

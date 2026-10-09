@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# SSH into the instance. Extra args run as a remote command.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+
+id="$(instance_id)"
+[[ -n "$id" ]] || die "no instance labelled $LABEL"
+
+url="$(vast ssh-url "$id")"   # ssh://root@host:port
+hostport="${url#ssh://}"
+exec ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -p "${hostport##*:}" "${hostport%:*}" "$@"

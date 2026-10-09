@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Print the reproducible, secret-free container startup script.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+cat <<EOF
+umask 077
+mkdir -p /workspace/models
+printf '%s\n' "\${LLAMA_API_KEY:?Set LLAMA_API_KEY when renting this template}" > /root/llm_api_key
+cat > /root/llama.sh <<'EOS'
+#!/bin/bash
+export LLAMA_CACHE=/workspace/models
+export LD_LIBRARY_PATH=/app:\${LD_LIBRARY_PATH:-}
+exec /app/llama-server \\
+  --hf-repo '$HF_REPO' --hf-file '$HF_FILE' --alias '$MODEL_ALIAS' \\
+  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja \\
+  $SAMPLING \\
+  --host 127.0.0.1 --port $REMOTE_PORT --api-key-file /root/llm_api_key
+EOS
+chmod 700 /root/llama.sh
+nohup /root/llama.sh > /workspace/llama.log 2>&1 &
+EOF

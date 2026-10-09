@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Show instance state, cost, SSH address, and the tail of the server log.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+
+id="$(instance_id)"
+[[ -n "$id" ]] || { echo "no instance labelled $LABEL (run bin/up)"; exit 0; }
+
+vast show instance "$id" --raw | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("instance  %s (%s)" % (d["id"], d.get("label")))
+print("state     %s" % d.get("actual_status"))
+print("status    %s" % (d.get("status_msg") or "").strip())
+print("gpus      %sx %s" % (d.get("num_gpus"), d.get("gpu_name")))
+print("cost      $%.3f/hr" % d.get("dph_total", 0))
+'
+echo "ssh       $(vast ssh-url "$id")"
+
+if [[ "${1:-}" == "--log" ]]; then
+  "$(dirname "$(realpath "$0")")/ssh" tail -n 20 /workspace/llama.log
+fi

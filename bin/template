@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Synchronize a private, secret-free Vast template from the checked-in config.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+export ROOT IMAGE DISK_GB
+export VAST_API_KEY="${VAST_API_KEY:-$(op read "$VAST_KEY_REF")}"
+python="$(dirname "$(realpath "$(command -v vastai)")")/python"
+[[ -x "$python" ]] || die "expected the Python interpreter beside the installed vastai CLI"
+exec "$python" - <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+from vastai import VastAI
+
+root = Path(os.environ['ROOT'])
+client = VastAI(api_key=os.environ['VAST_API_KEY'], quiet=True)
+name = 'vast-coder-gguf-ssh'
+image, tag = os.environ['IMAGE'].rsplit(':', 1)
+onstart = subprocess.check_output([str(root / 'bin/onstart')], text=True)
+fields = dict(name=name, image=image, image_tag=tag, env='', onstart_cmd=onstart,
+              disk_space=int(os.environ['DISK_GB']), ssh=True, jupyter=False,
+              direct=True, public=False)
+rows = client.search_templates('name=' + name)
+if len(rows) > 1:
+    raise SystemExit('multiple templates with this name; refusing to choose one')
+# The SDK update resets omitted fields, so always pass the complete definition.
+result = (client.update_template(rows[0]['hash_id'], **fields) if rows
+          else client.create_template(**fields))
+if not result.get('success'):
+    raise SystemExit('template synchronization failed')
+rows = client.search_templates('name=' + name)
+if len(rows) != 1:
+    raise SystemExit('template readback did not return exactly one match')
+t = rows[0]
+assert t['image'] == image and t['tag'] == tag and t['onstart'] == onstart
+assert t['private'] and t['runtype'] == 'ssh' and not t['jup_direct']
+assert t['recommended_disk_space'] == fields['disk_space']
+summary = {k: t.get(k) for k in ('id', 'hash_id', 'name', 'image', 'tag', 'runtype', 'private')}
+(root / '.state/template.json').write_text(json.dumps(summary, indent=2) + '\n')
+print(json.dumps(summary, indent=2))
+PY

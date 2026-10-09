@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Print an opencode provider block for the tunnelled server.
+# Merge it into ~/.config/opencode/opencode.json yourself.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+
+cat <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "vast": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Vast llama.cpp",
+      "options": {
+        "baseURL": "http://localhost:$LOCAL_PORT/v1",
+        "apiKey": "{file:$STATE_DIR/llm_api_key}"
+      },
+      "models": {
+        "$MODEL_ALIAS": { "name": "Qwen3.8 27B Coder (vast)" }
+      }
+    }
+  }
+}
+EOF

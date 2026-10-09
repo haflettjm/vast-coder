@@ -1,0 +1,15 @@
+[Unit]
+Description=Vast coding model SSH bridge (instance discovered by label)
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+Environment=VAST_CODER_ROOT=%h/git/personal/vast-coder
+ExecStart=/usr/bin/bash -lc 'exec "$VAST_CODER_ROOT/bin/tunnel"'
+Restart=always
+RestartSec=15
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=default.target
