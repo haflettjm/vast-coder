@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Build the loopback proxy into bin/vast-proxy (ignored by Git).
+set -euo pipefail
+root="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+cd "$root"
+go vet ./...
+go build -trimpath -o bin/vast-proxy ./cmd/vast-proxy
+echo "built $root/bin/vast-proxy"

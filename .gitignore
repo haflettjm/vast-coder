@@ -16,3 +16,6 @@ GEMINI.md
 .claude/
 .codex/
 .cursor/
+
+# Built proxy binary
+bin/vast-proxy

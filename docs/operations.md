@@ -120,6 +120,26 @@ A busy tunnel looks identical to a broken one over HTTP. Restarting a congested 
 
 The health timer is provided in `systemd/` but not yet installed or enabled.
 
+## Loopback proxy (Go)
+
+Why: one shared SSH stream over a lossy route let large queued prompts block everything, including `/health`, and clients that timed out left dead requests that were still forwarded. See `cmd/vast-proxy` and the README section for behaviour and flags.
+
+Verified offline (race detector, no network): concurrency never exceeds the slot count; FIFO order; queue-full and wait-timeout return 503 with `Retry-After`; a client that disconnects while queued is never sent upstream; a failed upstream request is sent exactly once (502, no replay); server-sent events are flushed as they arrive; `/health` answers within a second while every slot is busy; reads bypass the queue; oversized bodies are refused; only loopback addresses are accepted; pool balances load, survives one dead tunnel, reconnects after a drop and removes a tunnel whose keepalive fails; over a real in-process SSH server it carries HTTP, pins the host key on first use, refuses a changed key, falls back to the alternate route and refreshes discovery once when every route fails.
+
+Mutation check: reading the request body only after taking a slot made the dead-client test hang, so that test does detect the regression. A second planned mutation (allowing connection reuse) was not completed.
+
+Smoke run of the built binary against the current dead endpoint: `/health` answered immediately with `unreachable` and per-tunnel errors, and a POST returned 503.
+
+Not verified: the proxy has not yet carried real traffic to a live model server, was not tested with the 1Password agent approval flow, and has not run as a service. The rental it was written for was not serving when it was finished (below). A real latency or throughput comparison against the SSH bridge is still to do.
+
+## Migration to vLLM and a US rental (in progress, 2026-10-09)
+
+- The previous rental (llama.cpp, Q6_K, Hebei) no longer exists on the account, so its cached weights are gone.
+- A new instance in the United States (2x RTX 3090, about $0.351/hr) was rented from the console. It started on Vast's stock vLLM template. It was labelled `vast-coder` and switched with `vastai update instance` to the private template `vast-coder-vllm-ssh` (image `vllm/vllm-openai:v0.31.0`, Q5_K_S MTP GGUF, tensor parallel 2, fp8 KV cache, MTP with 2 speculative tokens).
+- After roughly an hour the instance was still `loading` with no container logs, and SSH was refused on every route. Nothing was served, so GGUF loading, MTP and the speed of vLLM on this model are unverified.
+- Decision needed: wait, reboot, or recreate the instance from the template. Creating a second instance with `bin/up --additional` is supported.
+- The vLLM startup installs `vllm-gguf-plugin` from PyPI without a pinned version at boot. Pin it once a working version is known.
+
 ## Further performance work
 
 - Keep the measured tensor/MTP candidate and exact quant while testing one parameter at a time.

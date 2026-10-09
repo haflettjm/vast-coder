@@ -183,3 +183,27 @@ The lifecycle checks, template synchronization/readback, SSH-only startup, dual-
 ## Readiness and watchdog
 
 `bin/health` prints JSON with `status` (`inference-ready`, `model-loading`, `unreachable`), `tunnel-connected`, and `tunnel-degraded` (remote healthy, local not). `--repair` restarts only the local bridge after `HEALTH_FAILURES` consecutive degraded checks, with a `HEALTH_COOLDOWN` between restarts. It never touches the rental and never replays requests. See `docs/operations.md` for the verified congestion root cause and limitations.
+
+## Loopback proxy (optional replacement for the SSH bridge)
+
+`cmd/vast-proxy` is a small Go program that serves `http://127.0.0.1:8000/v1` like the bridge does, but it manages the connections itself:
+
+- **Two independent SSH connections** (`-conns`, default 2) to the rental, each its own TCP stream, kept alive with 5 s keepalives (the rental's `sshd` drops silent clients after about 20 s) and reconnected with backoff. It tries the preferred route first and the alternate route from `.state/ssh_endpoint.json` second, and asks `bin/endpoint` to rediscover the instance, at most every two minutes, when every route fails.
+- **A bounded FIFO queue.** Inference requests (POST) take one of `-max-inflight` slots (set it to the server's slot count). Others wait up to `-queue-wait`, then get `503` with `Retry-After`. A full queue (`-max-queue`) is refused immediately. Reads such as `/v1/models` skip the queue.
+- **Dead clients are dropped.** The request body is read locally first, so a client that disconnects while queued never uses a slot or the slow link.
+- **No replay.** Each request uses a fresh SSH channel, and a failed upstream request is answered `502` and never resent.
+- **`/health` never waits.** It is answered by the proxy from tunnel state and a periodic probe of the server's own `/health`: `inference-ready` (200), `model-loading`, `degraded` or `unreachable` (503), with per-tunnel and queue counters.
+- **Safe by default.** It refuses to bind a non-loopback address and checks host keys: the user's `~/.ssh/known_hosts` first, then its own pinned file `.state/proxy_known_hosts` (pinned on first use, a changed key is always refused). It authenticates with the ssh-agent (`SSH_AUTH_SOCK`, or the 1Password agent socket) and unencrypted key files.
+
+```bash
+bin/build-proxy                                # go vet, then build bin/vast-proxy
+cp systemd/vast-coder-proxy.service ~/.config/systemd/user/
+systemctl --user stop vast-coder-bridge.service
+systemctl --user daemon-reload
+systemctl --user enable --now vast-coder-proxy.service
+curl -s http://127.0.0.1:8000/health
+```
+
+The proxy unit declares `Conflicts=` with the bridge unit, so starting one stops the other. Do not enable `bin/health --repair` (the watchdog timer) alongside the proxy: it restarts the bridge unit, which would stop the proxy. The proxy reconnects by itself.
+
+Tests: `go test -race ./...` (fake upstreams plus an in-process SSH server; no network, no rental).

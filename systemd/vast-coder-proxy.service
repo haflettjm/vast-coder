@@ -1,0 +1,17 @@
+[Unit]
+Description=Vast coding model proxy (SSH pool, request queue, health)
+# Both listen on the same loopback port, so only one may run.
+Conflicts=vast-coder-bridge.service
+After=network-online.target
+
+[Service]
+Type=exec
+Environment=VAST_CODER_ROOT=%h/git/personal/vast-coder
+ExecStart=%h/git/personal/vast-coder/bin/vast-proxy -listen 127.0.0.1:8000 -conns 2 -max-inflight 4 -max-queue 64 -queue-wait 30s
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
