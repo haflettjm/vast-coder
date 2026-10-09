@@ -14,11 +14,15 @@ export HF_HOME=/workspace/models/hf
 export VLLM_API_KEY="\$(cat /root/llm_api_key)"
 f=/workspace/models/$HF_FILE
 [[ -s "\$f" ]] || python3 -c "from huggingface_hub import hf_hub_download as d; d('$HF_REPO', '$HF_FILE', local_dir='/workspace/models')"
-python3 -c 'import vllm_gguf_plugin' 2>/dev/null || pip install -q vllm-gguf-plugin
+if [[ ! -f /usr/local/lib/python3.12/dist-packages/vllm_gguf_plugin/weights_adapter/qwen3_5.py ]]; then
+  # The PyPI release (0.0.5) has no Qwen3.5 adapter, so build the plugin from source.
+  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git
+  uv pip install --system -q --no-deps --no-build-isolation 'git+https://github.com/vllm-project/vllm-gguf-plugin@$VLLM_GGUF_PLUGIN_REF'
+fi
 exec vllm serve "\$f" --tokenizer '$VLLM_BASE_MODEL' --hf-config-path '$VLLM_BASE_MODEL' \\
   --served-model-name '$MODEL_ALIAS' --tensor-parallel-size 2 --max-model-len $CTX_SIZE --max-num-seqs $PARALLEL \\
   --kv-cache-dtype $VLLM_KV_DTYPE --gpu-memory-utilization $VLLM_GPU_UTIL \\
-  --speculative-config '{"method":"mtp","num_speculative_tokens":$VLLM_MTP_TOKENS}' \\
+  --language-model-only --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 \\
   --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0}' \\
   --host 127.0.0.1 --port $REMOTE_PORT
 EOS
@@ -39,7 +43,7 @@ export LLAMA_CACHE=/workspace/models
 export LD_LIBRARY_PATH=/app:\${LD_LIBRARY_PATH:-}
 exec /app/llama-server \\
   --hf-repo '$HF_REPO' --hf-file '$HF_FILE' --alias '$MODEL_ALIAS' \\
-  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja --fit off --split-mode $SPLIT_MODE --tensor-split 1,1 --device CUDA0,CUDA1 --cache-type-k $KV_CACHE_TYPE --cache-type-v $KV_CACHE_TYPE --parallel $PARALLEL --kv-unified --cont-batching --spec-type $SPEC_TYPE --spec-draft-n-max $DRAFT_MAX \\
+  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja --fit off --split-mode $SPLIT_MODE --tensor-split 1,1 --device CUDA0,CUDA1 --cache-type-k $KV_CACHE_TYPE --cache-type-v $KV_CACHE_TYPE --parallel $PARALLEL --kv-unified --cont-batching -b $LLAMA_BATCH -ub $LLAMA_BATCH --spec-type $SPEC_TYPE --spec-draft-n-max $DRAFT_MAX \\
   $SAMPLING \\
   --host 127.0.0.1 --port $REMOTE_PORT --api-key-file /root/llm_api_key
 EOS

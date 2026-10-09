@@ -6,7 +6,7 @@ This is the durable record of the deployment, measurements, failures, and outsta
 
 - Keep the current rental. Bridge work must not stop, destroy, recycle, or recreate the Vast instance.
 - Do not create another rental, increase the hourly cap, or change GPU power limits without approval.
-- Preserve the exact DavidAU model and MTP Q6_K file from `vast-coder.env`.
+- Preserve the exact DavidAU model and MTP GGUF file from `vast-coder.env` (Q5_K_S since 2026-10-09; Q6_K was the original baseline).
 - Changes to the local SSH service are not changes to the rental.
 - Never automatically replay inference requests or tool side effects after connection recovery.
 
@@ -132,13 +132,79 @@ Smoke run of the built binary against the current dead endpoint: `/health` answe
 
 Not verified: the proxy has not yet carried real traffic to a live model server, was not tested with the 1Password agent approval flow, and has not run as a service. The rental it was written for was not serving when it was finished (below). A real latency or throughput comparison against the SSH bridge is still to do.
 
-## Migration to vLLM and a US rental (in progress, 2026-10-09)
+## Engine decision (2026-10-09)
 
-- The previous rental (llama.cpp, Q6_K, Hebei) no longer exists on the account, so its cached weights are gone.
-- A new instance in the United States (2x RTX 3090, about $0.351/hr) was rented from the console. It started on Vast's stock vLLM template. It was labelled `vast-coder` and switched with `vastai update instance` to the private template `vast-coder-vllm-ssh` (image `vllm/vllm-openai:v0.31.0`, Q5_K_S MTP GGUF, tensor parallel 2, fp8 KV cache, MTP with 2 speculative tokens).
-- After roughly an hour the instance was still `loading` with no container logs, and SSH was refused on every route. Nothing was served, so GGUF loading, MTP and the speed of vLLM on this model are unverified.
-- Decision needed: wait, reboot, or recreate the instance from the template. Creating a second instance with `bin/up --additional` is supported.
-- The vLLM startup installs `vllm-gguf-plugin` from PyPI without a pinned version at boot. Pin it once a working version is known.
+Outcome: stay on llama.cpp. vLLM works but reads prompts about 7 to 9 times slower on this GGUF.
+
+### Current rental
+
+- Instance 55039645 (label `vast-coder`), United States, 2x RTX 3090 (PCIe, no NVLink), about $0.527/hr. The earlier $0.351/hr cap in `vast-coder.env` is below this price, so a fresh `bin/up` against the same offer would refuse until `MAX_HOURLY_COST` is raised deliberately.
+- Template `vast-coder-vllm-ssh` (id 758600) is attached to it, so the container image is `vllm/vllm-openai:v0.31.0`, not the llama.cpp image. A second template with the same name (id 758557) exists and makes `bin/template` ambiguous. It should be deleted by its owner.
+- The Hebei rental from the earlier notes no longer exists, and its weights went with it.
+
+### What was tried, in order
+
+1. vLLM 0.31.0 with `vllm-gguf-plugin` from PyPI (0.0.5). Failed at weight loading with `RuntimeError: Unknown gguf model_type: qwen3_5`, raised from `weights_adapter/default.py`. The PyPI release has no Qwen3.5 adapter.
+2. Setting `model_type` to `qwen3_8` in the local config. Wrong idea: transformers 5.17 does not know that type. (The README of the model does not ask for it.) Restored.
+3. The plugin built from source (commit `e2b8ad532b8b`), which adds `weights_adapter/qwen3_5.py`. It must be installed into the system site-packages, because a check run inside the cloned repo imports the repo copy by accident while vLLM workers keep importing the old one. With it, the GGUF loads.
+4. Tool calls returned HTTP 400 until the server was started with `--enable-auto-tool-choice --tool-call-parser qwen3_coder`. The reasoning text also leaked into message content until `--reasoning-parser qwen3` was added.
+5. MTP did not start. vLLM builds the draft model config from the local GGUF file path and asks the Hugging Face hub for an image processor config under that path (`HFValidationError`). `--language-model-only` did not help. MTP stayed off.
+6. Prefill measured at a flat 185 tok/s (5,925 tokens in 32 s, 11,844 in 64 s, 23,715 in 128 s). Not the prefill chunk size (2,048 and 16,384 gave the same), not the GDN backend (`--gdn-prefill-backend flashinfer` is unusable on sm86 and falls back to Triton/FLA), and not a missing extension (`_C_gguf` built, and Q5_K is in the plugin's CUDA GEMM list). The slow step was never isolated. The vLLM docs call GGUF "highly experimental and under-optimized", and plugin issue #142 reports that its bundled kernels come from an old llama.cpp snapshot.
+7. Prefix caching works on vLLM (4,730 tokens: 25.4 s cold, 0.8 s repeated, 0.8 s with a new tail), but cold prompts stay slow.
+
+### Measurements on the same file and hardware
+
+`llama-bench`, Q5_K_S, q8_0 KV, flash attention, batch and micro-batch 2048, two repetitions:
+
+| Engine and mode | pp4096 | pp16384 | tg128 |
+| --- | ---: | ---: | ---: |
+| llama.cpp `f39148a95`, layer split | 1,794.6 | 2,116.7 | 37.6 |
+| llama.cpp, tensor split | 1,719.6 | 1,656.6 | 54.0 |
+| ik_llama.cpp `5194a9e`, layer split | 1,300.0 | 1,245.9 | 38.8 |
+| ik_llama.cpp, graph split | 1,659.1 | 1,632.2 | 42.1 |
+
+The ik_llama.cpp graph run reported a 34.39 GiB model with 51.25 B parameters instead of 18.78 GiB and 26.9 B, so treat that row as unreliable. No ik_llama.cpp MTP run was done.
+
+Live server (llama.cpp, tensor split, MTP draft 2, 4 slots, 262,144 shared context, q8_0 KV):
+
+| Test | vLLM | llama.cpp |
+| --- | ---: | ---: |
+| Cold prefill, 23.7k tokens | 128 s | 18.3 s |
+| One short request, decode | 50 tok/s | 88 tok/s (51 of 52 draft tokens accepted) |
+| Four concurrent 29k-token prompts, 1,500 tokens each | 691 s | 163 s |
+| Own marker echoed by each of the four answers | 3 of 4 | 4 of 4 |
+| Per-stream decode averages during the four-job test | about 24 tok/s | 11.3, 13.7, 19.2, 30.9 tok/s |
+
+During the four-job test, MTP acceptance was 71% to 76%. The per-stream decode figures are averages over each job's life, so jobs that finished late include time spent while the others were still reading prompts. Peak single-stream decode is the 88 tok/s above. GPU memory with four slots and 262,144 context was about 19.3 GB per GPU.
+
+### How the live server was set up
+
+The instance runs the vLLM image, which has no `llama-server`. Mainline llama.cpp was built inside the container, so the Docker image path in `bin/up` was not used. Reproduce it with:
+
+```bash
+apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake libcurl4-openssl-dev
+git clone --depth 1 https://github.com/ggml-org/llama.cpp /workspace/llama.cpp   # tested at f39148a95
+cd /workspace/llama.cpp
+cmake -B build -G Ninja -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON
+cmake --build build -j 32 --target llama-server llama-bench   # about 8 minutes on 64 cores
+```
+
+`/root/llama.sh` then runs `llama-server` with the same flags that `bin/onstart` prints for the llama.cpp engine, plus `-m` pointing at the local GGUF. A new rental created by `bin/up` with `ENGINE=llamacpp` uses the prebuilt image instead and needs none of this. That path was verified on the earlier Hebei rental with the Q6_K file. It has not been re-run on this host with the Q5_K_S file and the 2048 batch setting, so confirm it with `bin/check` and `bin/bench` after the next rebuild.
+
+### Pitfalls found
+
+- `pkill -f "vllm serve"` leaves the engine and worker processes holding GPU memory. Kill `VLLM::` workers too, or the next start fails with "Free memory on device ... is less than desired GPU memory utilization".
+- vLLM's per-10-second stats credit a whole prompt to the window where it finishes, so prefill shows as `0.0 tokens/s` and then a spike. Measure prefill by wall clock.
+- Wait loops that `pgrep -f` for a script name match their own command line when that name appears in the same script.
+- llama.cpp logs `backend offload failed ... using CPU sampler` warnings for the speculative sampler. They are harmless.
+
+### Still open
+
+- Make `bin/onstart` or the template cover the in-container build, or move the instance back to the llama.cpp image template.
+- Pin a verified llama.cpp image digest or commit for reproducible performance.
+- The Go proxy has not carried live traffic.
+- MTP draft length 2 versus 3, and the ik_llama.cpp MTP path, were not tested.
+- The cold-prefill cost under four different agent system prompts at once is bounded by the heavy test above and has not been measured for real Hermes traffic.
 
 ## Further performance work
 

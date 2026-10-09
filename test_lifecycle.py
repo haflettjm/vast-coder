@@ -54,7 +54,7 @@ else:
     assert args[:3] == ['create', 'instance', '1']
     assert '--ssh' in args and '--direct' in args and '--jupyter' not in args
     startup = args[args.index('--onstart-cmd') + 1]
-    assert 'MAX-MTP-Q6_K.gguf' in startup and '--host 127.0.0.1' in startup
+    assert 'MAX-MTP-Q5_K_S.gguf' in startup and '--host 127.0.0.1' in startup and '-ub 2048' in startup
     assert '--api-key-file /root/llm_api_key' in startup
     assert (root / '.state/llm_api_key').read_text().strip() not in startup
     assert (root / '.state/llm_api_key').stat().st_mode & 0o777 == 0o600
@@ -67,7 +67,7 @@ else:
     assert args[args.index('--image') + 1] == 'vllm/vllm-openai:v0.31.0'
     startup = args[args.index('--onstart-cmd') + 1]
     assert 'MAX-MTP-Q5_K_S.gguf' in startup and 'vllm serve' in startup and 'llama-server' not in startup
-    assert '"method":"mtp"' in startup and '--tensor-parallel-size 2' in startup and '--host 127.0.0.1' in startup
+    assert '--enable-auto-tool-choice' in startup and '--tool-call-parser qwen3_coder' in startup and '--tensor-parallel-size 2' in startup and '--host 127.0.0.1' in startup
     assert '--api-key' not in startup and (root / '.state/llm_api_key').read_text().strip() not in startup
     assert subprocess.run(['bash', '-n'], input=startup, text=True).returncode == 0
     guard = subprocess.run(['python3', str(root / 'bin/apply')], env=dict(env, ENGINE='vllm'), text=True,

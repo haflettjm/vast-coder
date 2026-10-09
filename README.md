@@ -17,7 +17,7 @@ Hermes / coding agent / batch client
     rented 2x RTX 3090 instance
     llama-server on 127.0.0.1:8080
                 |
-       exact MTP Q6_K GGUF
+       exact MTP Q5_K_S GGUF
 ```
 
 Only SSH is exposed by the rental. The inference server and laptop bridge bind to loopback. No public inference gateway, Jupyter, custom HTTP proxy, Terraform stack, or Kubernetes cluster is needed.
@@ -25,11 +25,11 @@ Only SSH is exposed by the rental. The inference server and laptop bridge bind t
 ## Model
 
 - Repository: [DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF](https://huggingface.co/DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF)
-- File: `Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q6_K.gguf`
+- File: `Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q5_K_S.gguf` (the Q6_K file was the original baseline; Q5_K_S is the current choice)
 - API model alias: `qwen3.8-coder`
-- Engine: `ghcr.io/ggml-org/llama.cpp:server-cuda`
+- Engine: llama.cpp (`ghcr.io/ggml-org/llama.cpp:server-cuda` through `bin/up`). vLLM and ik_llama.cpp were evaluated and rejected, see [Engine comparison](#engine-comparison).
 
-The model file is explicitly selected. Scripts do not substitute a smaller model or another quant. The current desired state enables MTP with two draft tokens, tensor splitting across both GPUs, four concurrent slots, and a shared 262,144-token context pool.
+The model file is explicitly selected. Scripts do not substitute a smaller model or another quant. The current desired state enables MTP with two draft tokens, tensor splitting across both GPUs, four concurrent slots, a shared 262,144-token context pool, and a 2048-token batch.
 
 ## Requirements
 
@@ -165,6 +165,20 @@ Further changes require correctness and end-to-end speed checks. In particular, 
 
 References: [multi-GPU guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/multi-gpu.md), [server settings](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), [tool calling](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md), [SPEED-Bench](https://github.com/ggml-org/llama.cpp/tree/master/tools/server/bench/speed-bench), [reported MTP multi-GPU prefill regression](https://github.com/ggml-org/llama.cpp/issues/27428).
 
+## Engine comparison
+
+Measured on 2x RTX 3090 (PCIe, no NVLink) with the exact Q5_K_S GGUF. Cold prefill uses unique prompts, so no prefix cache applies. Details, commands, and caveats are in [docs/operations.md](docs/operations.md#engine-decision-2026-10-09).
+
+| Engine and mode | Cold prefill | Decode, one request |
+| --- | ---: | ---: |
+| vLLM 0.31.0 with vllm-gguf-plugin, TP 2 | 185 tok/s at 6k, 12k, and 24k tokens | 50 tok/s, MTP unavailable |
+| llama.cpp `f39148a95`, tensor split (chosen) | 1,720 tok/s at 4k, 1,657 at 16k | 54 tok/s, 88 with MTP |
+| llama.cpp, layer split | 1,795 at 4k, 2,117 at 16k | 37.6 tok/s |
+| ik_llama.cpp `5194a9e`, layer split | 1,300 at 4k, 1,246 at 16k | 38.8 tok/s |
+| ik_llama.cpp, graph split | 1,659 at 4k, 1,632 at 16k | 42.1 tok/s (reported a 34 GiB model, so not trusted) |
+
+Four concurrent jobs, each a 29k-token cold prompt and a 1,500-token answer: vLLM took 691 s, llama.cpp took 163 s, and all four answers echoed their own marker on llama.cpp. vLLM prefill was the bottleneck: a flat 185 tok/s regardless of length or chunk size, with the Q5_K CUDA kernels present. Only llama.cpp runs MTP on this file (draft acceptance 71% to 98%).
+
 ## Checks and security
 
 ```bash
@@ -178,7 +192,7 @@ Offline checks use an explicitly fake Vast CLI. They do not rent GPUs. They cove
 
 ## Verification status
 
-The lifecycle checks, template synchronization/readback, SSH-only startup, dual-GPU visibility, model identity, and tool-call round trip have been exercised. Tensor splitting plus MTP measured 71.69 tok/s on a short coding request. The near-full-context test was canceled and competing requests exceeded the shared pool. The localhost bridge is currently degraded and is not yet repaired. See [operations and verification notes](docs/operations.md) for exact findings and remaining checks.
+The lifecycle checks, template synchronization/readback, SSH-only startup, dual-GPU visibility, model identity, and tool-call round trip have been exercised. On the current US rental (instance 55039645), llama.cpp with tensor splitting and MTP passed `bin/check`, decoded at 88 tok/s on a short request, and finished the four-job 29k-token test in 163 s. The near-full-context test was never completed and competing requests can exceed the shared pool. The Go proxy has not yet carried live traffic. The live server was built from source inside the container, which `bin/up` does not reproduce yet. See [operations and verification notes](docs/operations.md) for exact findings and remaining checks.
 
 ## Readiness and watchdog
 
