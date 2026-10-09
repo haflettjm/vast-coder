@@ -69,13 +69,16 @@ func newSSHConnector(cfg sshConfig) connector {
 			if err != nil {
 				lastErr = err
 			} else {
+				var routeErrs []error
 				for _, addr := range ep.routes() {
 					t, err := dialSSH(ctx, addr, cfg)
 					if err == nil {
 						return t, nil
 					}
-					lastErr = fmt.Errorf("%s: %w", addr, err)
+					routeErrs = append(routeErrs, fmt.Errorf("%s: %w", addr, err))
 				}
+				// Keep every route's failure, not just the last, so a bad preferred route is visible.
+				lastErr = errors.Join(routeErrs...)
 			}
 			// Every route failed. Ask discovery to refresh the cache, at most every two minutes.
 			if attempt == 0 && cfg.refresher != nil {
@@ -147,29 +150,40 @@ func dialSSH(ctx context.Context, addr string, cfg sshConfig) (tunnel, error) {
 	return sshTunnel{c: ssh.NewClient(conn, chans, reqs)}, nil
 }
 
+// authMethods offers the agent's keys and the key files through ONE publickey method.
+// x/crypto/ssh tries each method name once, so two separate publickey methods would
+// leave the key files unused whenever the agent answers but holds no usable key.
 func authMethods(cfg sshConfig) ([]ssh.AuthMethod, func()) {
-	var methods []ssh.AuthMethod
 	closer := func() {}
+	var agentSigners func() ([]ssh.Signer, error)
 	if cfg.agentSock != "" {
 		if conn, err := net.DialTimeout("unix", cfg.agentSock, 2*time.Second); err == nil {
-			methods = append(methods, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
+			agentSigners = agent.NewClient(conn).Signers
 			closer = func() { _ = conn.Close() }
 		}
 	}
-	var signers []ssh.Signer
+	var fileSigners []ssh.Signer
 	for _, f := range cfg.keyFiles {
 		pem, err := os.ReadFile(f)
 		if err != nil {
 			continue
 		}
 		if s, err := ssh.ParsePrivateKey(pem); err == nil { // encrypted keys are skipped
-			signers = append(signers, s)
+			fileSigners = append(fileSigners, s)
 		}
 	}
-	if len(signers) > 0 {
-		methods = append(methods, ssh.PublicKeys(signers...))
+	if agentSigners == nil && len(fileSigners) == 0 {
+		return nil, closer
 	}
-	return methods, closer
+	return []ssh.AuthMethod{ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+		var all []ssh.Signer
+		if agentSigners != nil {
+			if s, err := agentSigners(); err == nil {
+				all = append(all, s...)
+			}
+		}
+		return append(all, fileSigners...), nil
+	})}, closer
 }
 
 // hostKeyCallback verifies against the user's known_hosts first. A host unknown

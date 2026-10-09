@@ -24,7 +24,7 @@ Current state, as recorded:
 | Engine on the live box | Mainline llama.cpp commit `f39148a95`, built from source inside a container that was created from the vLLM image |
 | Live server settings | tensor split, MTP draft 2, 4 slots, shared 262,144-token context, q8_0 KV cache, batch 2048 |
 | Decision | Stay on llama.cpp. vLLM works on this file but reads cold prompts about 7 to 9 times slower |
-| Go proxy | 13 offline Python tests and the Go test suite pass; it has carried no live traffic |
+| Go proxy | Served live traffic on a side port after one SSH-auth bug fix (committed); latency equal to the bridge; not installed as the service Hermes uses |
 | Not done | Near-full-context test never completed; in-container build is not reproducible from `bin/up`; the watchdog timer is not installed |
 
 The single most important open item is that the live server is not reproducible from the repository, and the proxy that was written to fix the connection problem has never been run against a live model server.
@@ -138,12 +138,16 @@ Also done: a mutation check (reading the body only after taking a slot made the 
 
 While writing this report I re-ran `go test -race -count=1 ./...` and the three Python suites. The Python suites passed. The Go suite failed on the first run and then passed on six consecutive reruns. I did not capture the failing test name. Files `cmd/vast-proxy/sshtunnel.go` and `sshtunnel_test.go` were modified in the working tree at 13:52, shortly after that first run, by something other than this report's author, so the first failure may have come from a half-edited tree rather than a flaky test. Treat it as unexplained, and note that uncommitted proxy edits exist beyond what this report describes.
 
+### Verified live (2026-10-09)
+
+Run on a side port next to the bridge, against the live llama-server. The first run exposed a bug: the proxy could not authenticate at all, because two separate publickey methods were registered and x/crypto/ssh tries each method name once; the 1Password agent answered with no identities and used up the attempt, so the file key was never offered. The fix is one publickey callback that returns the agent's signers followed by the file signers, plus joined errors across routes, with a regression test that reproduces the live failure. After the fix: `/health` `inference-ready` with two tunnels, models, chat, incremental streaming, the tool-call round trip, four and six concurrent requests (six: two queued, none rejected), queued and in-flight disconnects dropped cleanly, a non-loopback Host rejected with 403, a clean 502 or 503 for an unreachable upstream, and no request sent twice (server-side task counts matched requests sent exactly). Small-request latency matched the bridge (medians 0.93 to 0.98 s versus 0.92 to 0.97 s). Details are in `docs/operations.md`.
+
 ### Not verified
 
-- The proxy has never carried real traffic to a live model server.
-- It was not tested with the 1Password agent approval flow.
-- It has never run as a systemd service.
-- No latency or throughput comparison against the SSH bridge exists.
+- 90 KB prompts, the original cause of the jam, were not part of the live test.
+- It has never run as a systemd service, and Hermes has not been pointed at it.
+- The 1Password approval flow was not exercised: the agent socket answered with no identities and the unencrypted file key was used.
+- A passphrase-protected key file would be skipped.
 - The second planned mutation check (allowing connection reuse) was not completed.
 - Whether per-request SSH channels over a pool of 2 actually avoid head-of-line blocking on a lossy path is a design expectation, not a measurement. Two TCP streams still share the same lossy route, and the preferred route is now the faster Vast proxy host.
 
@@ -275,6 +279,10 @@ A second template with the same name exists (id 758557), which makes `bin/templa
 - Stopped rentals can still incur storage charges, and `bin/down` destroys the rental. The rental is on-demand (`is_bid: False`), not spot, so no preemption handling exists or is needed.
 - Disk is 56 GB (`DISK_GB`).
 
+### Hermes integration and operation notes (2026-10-09)
+
+The `vastcoder` profile matched the live server without changes and passed a plain and a tool request (about 30 s and 22.5 s wall, with 14k prompt tokens per call). The kanban dispatcher only spawns profiles listed in the default profile's `dispatch_profiles`, which excludes `vastcoder`, so tickets cannot simply be reassigned to it. A per-ticket `set-model --provider` override exists, but the `claude` profile does not know the `custom:vast-coder` provider. Ticket assignment is being handled by the owner. A burst of connection-refused lines in the bridge journal around 13:30 local was the engine swap, not a crash. Vision input is untested but cheap to try (projector already on the box, about 5 GB free per GPU); the open questions are MTP together with the projector and whether Hermes sends images.
+
 ## 7. Limitations and caveats
 
 - **Small samples.** Throughput tables come from single runs or two repetitions on a noisy shared link. Differences of a few percent are not meaningful. These are not production capacity figures.
@@ -292,7 +300,7 @@ A second template with the same name exists (id 758557), which makes `bin/templa
 ## 8. Open work and recommended next steps, ranked
 
 1. **Make the live server reproducible.** Either teach `bin/onstart` and the template to cover the in-container build, or move the instance back to the llama.cpp image template. Pin a llama.cpp commit or image digest. Delete the duplicate template (758557). Then re-run `bin/check` and `bin/bench` on a rebuild with the Q5_K_S file and 2048 batch. This is first because the working server cannot currently be recreated from the repo.
-2. **Run the Go proxy against the live server.** Start it as the systemd unit with the real agent socket (including the 1Password approval flow), run `bin/check` through it, then compare upload time and `/health` behavior against the bridge on the current US host. Find out whether the congestion problem exists on the new host at all before investing further. Re-run the Go suite several times on a clean tree to rule out a flaky test (one unexplained failure was seen, see section 4), and commit or discard the uncommitted `sshtunnel.go` edits first.
+2. **Switch Hermes to the Go proxy under systemd.** (The live side-port run passed.)  Start it as the systemd unit with the real agent socket (including the 1Password approval flow), run `bin/check` through it, then compare upload time and `/health` behavior against the bridge on the current US host. Find out whether the congestion problem exists on the new host at all before investing further. Re-run the Go suite several times on a clean tree to rule out a flaky test (one unexplained failure was seen, see section 4), and commit or discard the uncommitted `sshtunnel.go` edits first.
 3. **Fix the stated inconsistencies in the config and docs.** Decide the price cap (`MAX_HOURLY_COST` below the live rate), update the stale Q6_K line in "Current inference configuration", and remove or qualify the README sentence that no custom proxy is needed. Document the `_common.sh` key cache or drop it.
 4. **Lower the load that causes the backlog.** Limit concurrent Hermes workers to the slot count (4), and consider reducing the base prompt or tool schema size. Client retries triple uploads, so retry behavior matters more than transport tuning.
 5. **Finish the long-context test in a controlled window.** Coordinate with the user, run it with no competing requests, and verify answer correctness. Add admission control for the shared pool if concurrent long requests are expected.

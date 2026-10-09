@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // startSSHServer is a minimal in-process sshd that only supports direct-tcpip
@@ -229,4 +231,80 @@ func TestEndpointCacheValidation(t *testing.T) {
 	if err != nil || len(ep.routes()) != 2 || ep.routes()[0] != "ssh6.vast.ai:11088" {
 		t.Errorf("routes %v err %v", ep.routes(), err)
 	}
+}
+
+// An agent that answers but holds no key must not stop the key files from being tried.
+func TestEmptyAgentDoesNotBlockKeyFiles(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	userSigner, _ := ssh.NewSignerFromKey(priv)
+	_ = pub
+	pemBlock, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "id_ed25519")
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(pemBlock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sock := filepath.Join(dir, "agent.sock")
+	aln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = aln.Close() })
+	keyring := agent.NewKeyring() // empty
+	go func() {
+		for {
+			c, err := aln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _ = agent.ServeAgent(keyring, c); _ = c.Close() }()
+		}
+	}()
+
+	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
+	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
+	scfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
+		if string(k.Marshal()) == string(userSigner.PublicKey().Marshal()) {
+			return nil, nil
+		}
+		return nil, io.EOF
+	}}
+	scfg.AddHostKey(hostSigner)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			raw, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				conn, chans, reqs, err := ssh.NewServerConn(raw, scfg)
+				if err != nil {
+					return
+				}
+				go ssh.DiscardRequests(reqs)
+				go func() {
+					for nc := range chans {
+						_ = nc.Reject(ssh.Prohibited, "no")
+					}
+				}()
+				_ = conn.Wait()
+			}()
+		}
+	}()
+
+	cfg := sshConfig{stateDir: dir, agentSock: sock, keyFiles: []string{keyFile}, timeout: 5 * time.Second}
+	tun, err := dialSSH(context.Background(), ln.Addr().String(), cfg)
+	if err != nil {
+		t.Fatalf("key file was not used after an empty agent: %v", err)
+	}
+	_ = tun.Close()
 }
