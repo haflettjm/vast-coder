@@ -19,6 +19,7 @@ jobs:
         shell: bash
         run: |
           for script in bin/*; do
+            [[ -f "$script" ]] || continue
             IFS= read -r first < "$script"
             if [[ "$first" == *bash* ]]; then
               bash -n "$script"
