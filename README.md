@@ -29,7 +29,7 @@ Only SSH is exposed by the rental. The inference server and laptop bridge bind t
 - API model alias: `qwen3.8-coder`
 - Engine: `ghcr.io/ggml-org/llama.cpp:server-cuda`
 
-The model file is explicitly selected. Scripts do not substitute a smaller model or another quant. The current desired state enables MTP with two draft tokens, tensor splitting across both GPUs, two concurrent slots, and a shared 262,144-token context pool.
+The model file is explicitly selected. Scripts do not substitute a smaller model or another quant. The current desired state enables MTP with two draft tokens, tensor splitting across both GPUs, four concurrent slots, and a shared 262,144-token context pool.
 
 ## Requirements
 
@@ -144,7 +144,7 @@ Stopping a rental is different from destroying it. `bin/down` destroys it. Stopp
 
 ## Dual-GPU and batch tuning
 
-The original compatibility baseline used layer splitting, full GPU offload, Flash Attention, FP16 KV, and 64K context. The tested candidate uses tensor splitting across both GPUs, FP16 KV, MTP with two draft tokens, two slots, continuous batching, and a shared 256K context pool. `--fit off` prevents silently reducing the configured context. Check `nvidia-smi topo -m`; the tested host reports PCIe/PHB connectivity, not NVLink. Its CUDA backend links NCCL.
+The original compatibility baseline used layer splitting, full GPU offload, Flash Attention, FP16 KV, and 64K context. The tested candidate uses tensor splitting across both GPUs, q8_0 KV (configurable via KV_CACHE_TYPE), MTP with two draft tokens, four slots, continuous batching, and a shared 256K context pool. `--fit off` prevents silently reducing the configured context. Check `nvidia-smi topo -m`; the tested host reports PCIe/PHB connectivity, not NVLink. Its CUDA backend links NCCL.
 
 Measured on the same short coding prompt and exact Q6_K model:
 

@@ -13,7 +13,7 @@ export LLAMA_CACHE=/workspace/models
 export LD_LIBRARY_PATH=/app:\${LD_LIBRARY_PATH:-}
 exec /app/llama-server \\
   --hf-repo '$HF_REPO' --hf-file '$HF_FILE' --alias '$MODEL_ALIAS' \\
-  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja --fit off --split-mode $SPLIT_MODE --tensor-split 1,1 --device CUDA0,CUDA1 --cache-type-k f16 --cache-type-v f16 --parallel $PARALLEL --kv-unified --cont-batching --spec-type $SPEC_TYPE --spec-draft-n-max $DRAFT_MAX \\
+  --n-gpu-layers 999 --ctx-size $CTX_SIZE --flash-attn on --jinja --fit off --split-mode $SPLIT_MODE --tensor-split 1,1 --device CUDA0,CUDA1 --cache-type-k $KV_CACHE_TYPE --cache-type-v $KV_CACHE_TYPE --parallel $PARALLEL --kv-unified --cont-batching --spec-type $SPEC_TYPE --spec-draft-n-max $DRAFT_MAX \\
   $SAMPLING \\
   --host 127.0.0.1 --port $REMOTE_PORT --api-key-file /root/llm_api_key
 EOS

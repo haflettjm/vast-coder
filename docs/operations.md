@@ -26,8 +26,8 @@ This is the durable record of the deployment, measurements, failures, and outsta
 - Context allocation: 262,144 tokens.
 - Split: tensor across CUDA0 and CUDA1, equal proportions.
 - MTP: `draft-mtp`, maximum two draft tokens.
-- Two request slots with unified KV and continuous batching.
-- FP16 K/V cache; Flash Attention enabled; automatic context reduction disabled.
+- Four request slots with unified KV and continuous batching. Every slot can use the full 262,144-token pool; slots share it, they do not divide it.
+- q8_0 K/V cache (`KV_CACHE_TYPE`); Flash Attention enabled; automatic context reduction disabled.
 - Same Q6_K model file as the original baseline.
 - Model server binds to remote loopback. Agent clients use the local loopback bridge.
 
@@ -47,6 +47,19 @@ Same short coding prompt, 512-token output cap, sampling temperature 0.6, low re
 Generation improved by 2.23x on this short test. Server decode excludes prompt processing and network overhead; end-to-end results include both. User-observed peaks near 300 tok/s have not been independently established as sustained decode throughput.
 
 `python3 bin/bench <label>` saves detailed local measurements under `.state/`. Those files are not published.
+
+### Four slots and q8_0 KV cache (2026-10-09)
+
+Same prompt, seeds and output cap as above, measured through the bridge. The model's trained context is 262,144, equal to the configured context, so extra memory cannot raise context without RoPE scaling (not attempted).
+
+| Metric | 4 slots, FP16 KV | 4 slots, q8_0 KV |
+| --- | ---: | ---: |
+| Single-request server decode | 72.5 tok/s | 71.1 tok/s |
+| Two-request aggregate end-to-end | 72.4 tok/s | 68.0 tok/s |
+| MTP acceptance (single / dual) | 81.7% / 77.1% | 77.6% / 84.6% |
+| GPU memory used (both GPUs) | 44.6 GB | 38.9 GB |
+
+Going from 2 to 4 slots cost about 350 MB per GPU and no measurable speed. q8_0 K/V freed about 5.7 GB. Differences between the FP16 and q8_0 rows are within the noise of a single run on a lossy link. Tool-call round trip passed with q8_0. Output quality under q8_0 was not independently evaluated beyond that check. More slots do not fix the upload bottleneck described below.
 
 ## Functional checks
 
