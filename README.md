@@ -83,7 +83,19 @@ Model:    qwen3.8-coder
 API key:  contents of .state/llm_api_key (never commit or log it)
 ```
 
-`bin/opencode-config` prints an OpenCode provider block that references the local key file without printing the key. Hermes integration uses its native custom OpenAI-compatible provider support; the bridge does not need a Hermes plugin. Switching clients to this endpoint is separate from provisioning and should not silently replace a working primary model.
+`bin/opencode-config` prints an OpenCode provider block that references the local key file without printing the key.
+
+For Hermes, use the checked-in launcher:
+
+```bash
+bin/hermes --setup-only       # Configure a project-local, gitignored Hermes home
+bin/hermes                   # Interactive coding agent through the bridge
+bin/hermes -q "Explain this repository" --oneshot
+```
+
+It registers `custom:vast-coder` with the native `key_cmd` credential helper and Chat Completions transport. The API key is read internally from `.state/llm_api_key`, not stored in YAML or printed. The project-local `.hermes/` home is separate from the user's default provider configuration. First use may bootstrap an isolated Hermes runtime and take time; the CLI must be installed already. This launcher configures the client but does not provision GPUs or start the bridge.
+
+See [Hermes named custom providers](https://hermes-agent.nousresearch.com/docs/integrations/providers#named-custom-providers). No Hermes plugin or custom proxy is needed.
 
 After the model finishes downloading and loading:
 

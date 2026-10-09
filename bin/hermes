@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Run Hermes against the bridge without changing the user's primary provider.
+source "$(dirname "$(realpath "$0")")/_common.sh"
+export HERMES_HOME="$ROOT/.hermes"
+provider="$(python3 - "$LOCAL_PORT" "$MODEL_ALIAS" "$STATE_DIR/llm_api_key" <<'PY'
+import json, shlex, sys
+print(json.dumps({
+    'api': 'http://127.0.0.1:' + sys.argv[1] + '/v1',
+    'transport': 'chat_completions', 'default_model': sys.argv[2],
+    'models': [sys.argv[2]], 'discover_models': False,
+    'key_cmd': 'cat ' + shlex.quote(sys.argv[3]),
+}))
+PY
+)"
+hermes config set providers.vast-coder "$provider" >/dev/null
+if [[ "${1:-}" == "--setup-only" ]]; then
+  echo "Configured isolated Hermes home: $HERMES_HOME"
+  exit 0
+fi
+exec hermes chat --provider custom:vast-coder --model "$MODEL_ALIAS" "$@"
