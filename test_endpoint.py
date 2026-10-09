@@ -46,4 +46,28 @@ with tempfile.TemporaryDirectory(prefix='vast-endpoint-') as directory:
         except SystemExit:
             pass
     assert not path.exists()
+    # Proxy route is preferred and the direct IP is kept as the alternate.
+    path.unlink(missing_ok=True)
+    instance = json.dumps([{'id': 123, 'label': 'vast-coder', 'ssh_host': 'ssh9.vast.ai', 'ssh_port': 11088}])
+    def fake_vast(args, timeout=1):
+        return instance if args[0] == 'show' else 'ssh://root@203.0.113.7:26655\n'
+    with patch('sys.argv', ['endpoint']), patch.dict(g, {'vast': fake_vast}):
+        ns['main']()
+    saved = json.loads(path.read_text())
+    assert (saved['host'], saved['port']) == ('ssh9.vast.ai', 11088), saved
+    assert (saved['alt_host'], saved['alt_port']) == ('203.0.113.7', 26655), saved
+    assert ns['cached'](path, 'vast-coder', 60) == saved
+    # A malformed proxy record falls back to the direct endpoint only.
+    bad = json.dumps([{'id': 123, 'label': 'vast-coder', 'ssh_host': '-oProxyCommand=x', 'ssh_port': 1}])
+    path.unlink(missing_ok=True)
+    with patch('sys.argv', ['endpoint']), patch.dict(g, {'vast': lambda a, t=1: bad if a[0] == 'show' else 'ssh://root@203.0.113.7:26655\n'}):
+        ns['main']()
+    assert 'alt_host' not in json.loads(path.read_text())
+    # Unsafe alternate hosts in a cached record are rejected.
+    path.write_text(json.dumps(dict(saved, alt_host='-oProxyCommand=x')))
+    try:
+        ns['cached'](path, 'vast-coder', 60)
+        raise AssertionError('unsafe alternate host accepted')
+    except SystemExit:
+        pass
 print('Endpoint checks passed: cache TTL, timeout fallback, authoritative absence and duplicate refusal')

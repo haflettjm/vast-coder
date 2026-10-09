@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
-# SSH through the discovered endpoint; --cached skips cloud/credential discovery.
+# SSH through the discovered endpoint. --cached skips cloud/credential discovery;
+# --alt uses the alternate (direct) route when the endpoint record has one.
 source "$(dirname "$(realpath "$0")")/_common.sh"
 mode=()
-if [[ "${1:-}" == --cached ]]; then
-  mode=(--cached)
+alt=0
+while [[ "${1:-}" == --cached || "${1:-}" == --alt ]]; do
+  [[ "$1" == --cached ]] && mode=(--cached) || alt=1
   shift
-fi
+done
 endpoint="$("$ROOT/bin/endpoint" "${mode[@]}")"
-mapfile -t target < <(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["host"]); print(d["port"])' "$endpoint")
+mapfile -t target < <(python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+if sys.argv[2] == "1":
+    if "alt_host" not in d:
+        sys.exit("no alternate route recorded")
+    print(d["alt_host"]); print(d["alt_port"])
+else:
+    print(d["host"]); print(d["port"])
+' "$endpoint" "$alt")
 exec ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
   -p "${target[1]}" "root@${target[0]}" "$@"

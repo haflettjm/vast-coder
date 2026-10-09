@@ -2,6 +2,19 @@
 # Forward localhost:$LOCAL_PORT to the model server. The server only listens on
 # the instance's loopback, so this tunnel is the only way in.
 source "$(dirname "$(realpath "$0")")/_common.sh"
+ssh_bin="$(dirname "$(realpath "$0")")/ssh"
+opts=(-o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -L "127.0.0.1:$LOCAL_PORT:127.0.0.1:$REMOTE_PORT")
 
 echo "model API at http://localhost:$LOCAL_PORT/v1 (Ctrl-C to close)"
-exec "$(dirname "$(realpath "$0")")/ssh" -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -L "127.0.0.1:$LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
+start=$SECONDS
+set +e
+"$ssh_bin" "${opts[@]}"
+rc=$?
+set -e
+# If the preferred route failed immediately, try the alternate once. A long-lived
+# session that drops exits normally so systemd restarts on the preferred route.
+if (( SECONDS - start < 30 )); then
+  echo "preferred route failed quickly (status $rc); trying the alternate route" >&2
+  exec "$ssh_bin" --alt "${opts[@]}"
+fi
+exit "$rc"

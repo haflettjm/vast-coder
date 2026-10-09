@@ -25,7 +25,19 @@ def valid(row, label, max_age):
     assert re.fullmatch(r'[A-Za-z0-9.:-]+', row['host']) and not row['host'].startswith('-')
     assert isinstance(row['port'], int) and 1 <= row['port'] <= 65535
     assert 0 <= time.time() - row['updated_at'] <= max_age
+    if 'alt_host' in row or 'alt_port' in row:
+        assert re.fullmatch(r'[A-Za-z0-9.:-]+', row['alt_host']) and not row['alt_host'].startswith('-')
+        assert isinstance(row['alt_port'], int) and 1 <= row['alt_port'] <= 65535
     return row
+
+
+def proxy_route(instance):
+    """The Vast SSH proxy (ssh_host/ssh_port) is close to most clients; the direct IP may cross a lossy path."""
+    host, port = instance.get('ssh_host'), instance.get('ssh_port')
+    if isinstance(host, str) and isinstance(port, int) and re.fullmatch(r'[A-Za-z0-9.-]+', host) \
+            and not host.startswith('-') and 1 <= port <= 65535:
+        return host, port
+    return None
 
 
 def cached(path, label, age):
@@ -67,6 +79,11 @@ def main():
         assert url.scheme == 'ssh' and url.username == 'root' and url.password is None
         row = valid({'id': instance['id'], 'label': label, 'host': url.hostname,
                      'port': url.port, 'updated_at': time.time()}, label, age)
+        proxy = proxy_route(instance)
+        if proxy:
+            # Proxy first, direct IP kept as the alternate route.
+            row = valid(dict(row, host=proxy[0], port=proxy[1], alt_host=url.hostname, alt_port=url.port),
+                        label, age)
     except (subprocess.SubprocessError, ValueError, AssertionError, TypeError):
         row = cached(path, label, age)
         if row['id'] != instance['id']:
