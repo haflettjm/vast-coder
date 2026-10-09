@@ -193,7 +193,7 @@ The lifecycle checks, template synchronization/readback, SSH-only startup, dual-
 - **Dead clients are dropped.** The request body is read locally first, so a client that disconnects while queued never uses a slot or the slow link.
 - **No replay.** Each request uses a fresh SSH channel, and a failed upstream request is answered `502` and never resent.
 - **`/health` never waits.** It is answered by the proxy from tunnel state and a periodic probe of the server's own `/health`: `inference-ready` (200), `model-loading`, `degraded` or `unreachable` (503), with per-tunnel and queue counters.
-- **Safe by default.** It refuses to bind a non-loopback address and checks host keys: the user's `~/.ssh/known_hosts` first, then its own pinned file `.state/proxy_known_hosts` (pinned on first use, a changed key is always refused). It authenticates with the ssh-agent (`SSH_AUTH_SOCK`, or the 1Password agent socket) and unencrypted key files.
+- **Safe by default.** It refuses to bind a non-loopback address, rejects any request whose `Host` header is not `localhost` or a loopback IP (403, which blocks DNS-rebinding attacks from web pages), and checks host keys: the user's `~/.ssh/known_hosts` first, then its own pinned file `.state/proxy_known_hosts` (pinned on first use, a changed key is always refused). It authenticates with the ssh-agent (`SSH_AUTH_SOCK`, or the 1Password agent socket) and unencrypted key files.
 
 ```bash
 bin/build-proxy                                # go vet, then build bin/vast-proxy

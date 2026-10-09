@@ -355,3 +355,34 @@ func TestOnlyLoopbackAddressesAreAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestsWithANonLoopbackHostAreRefused(t *testing.T) {
+	g := newRig(t, serverConfig{maxInflight: 1, maxQueue: 1}, func(g *rig) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { g.hits.Add(1) })
+	})
+	do := func(method, path, host string) int {
+		req, _ := http.NewRequest(method, g.proxy.URL+path, strings.NewReader("{}"))
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, host := range []string{"evil.example", "evil.example:8000", "192.168.1.5:8000", "127.0.0.1.evil.example"} {
+		for _, call := range [][2]string{{"POST", "/v1/chat/completions"}, {"GET", "/health"}, {"GET", "/v1/models"}} {
+			if code := do(call[0], call[1], host); code != http.StatusForbidden {
+				t.Errorf("%s %s with Host %q returned %d, want 403", call[0], call[1], host, code)
+			}
+		}
+	}
+	if g.hits.Load() != 0 {
+		t.Fatalf("a refused request reached the model server %d times", g.hits.Load())
+	}
+	for _, host := range []string{"localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LOCALHOST"} {
+		if code := do("POST", "/v1/chat/completions", host); code != http.StatusOK {
+			t.Errorf("Host %q returned %d, want 200", host, code)
+		}
+	}
+}

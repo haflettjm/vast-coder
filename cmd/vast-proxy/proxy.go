@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +61,12 @@ func newServer(cfg serverConfig, up upstream, remoteHost string) *server {
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Refuse any Host that is not a loopback name. Without this, a web page could use DNS
+	// rebinding to make the browser talk to this loopback service under another hostname.
+	if !loopbackHost(r.Host) {
+		writeError(w, http.StatusForbidden, "host not allowed", "")
+		return
+	}
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
 		s.serveHealth(w)
 		return
@@ -232,4 +239,18 @@ func ageSeconds(t time.Time) float64 {
 		return -1
 	}
 	return time.Since(t).Seconds()
+}
+
+// loopbackHost accepts localhost and loopback IP literals, with or without a port.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
